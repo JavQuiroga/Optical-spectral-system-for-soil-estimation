@@ -1,0 +1,7 @@
+scan_blocks_output/
+*.npy
+*.pth
+__pycache__/
+.vscode/
+mono/
+*.exe
