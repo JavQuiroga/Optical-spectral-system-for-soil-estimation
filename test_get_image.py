@@ -95,4 +95,4 @@ def main(exposure_time_us: float = 50000):  # Default: 50ms
 if __name__ == "__main__":
     # Llama a main() pasando el tiempo de exposición que desees (en microsegundos)
     # Ejemplo: para 50ms (50,000 microsegundos)
-    main(exposure_time_us=95000)
+    main(exposure_time_us=10000)

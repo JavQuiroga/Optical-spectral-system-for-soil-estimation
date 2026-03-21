@@ -9,7 +9,7 @@ time.sleep(5)
 m.set_grating(1)   # si ya le agregaste set_grating
 time.sleep(5)
 
-m.set_wavelength(600)
+m.set_wavelength(400)
 time.sleep(5)
 
 m.close()

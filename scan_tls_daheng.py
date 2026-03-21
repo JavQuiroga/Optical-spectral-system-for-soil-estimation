@@ -145,14 +145,15 @@ def main():
 
     # -------- Define tus bloques aquí --------
     # Nota: los valores grating/filtro son ejemplo: cámbialos por los tuyos reales.
+    exposure_time = 50000
     blocks = [
-        ("B1_0400_0410", 400, 410, 2, 1, 2, 90000),
-        ("B2_0411_0450", 411, 450, 2, 1, 2, 80000),
-        ("B3_0451_0500", 451, 500, 2, 1, 2, 60000),
-        ("B4_0501_0700", 501, 700, 2, 1, 2, 50000),
-        ("B5_0701_1000", 701, 1000, 2, 2, 3, 35000),  # 40ms para el segundo bloque
-        ("B6_1001_1300", 1001, 1300, 2, 2, 4, 25000),  # 60ms para el tercer bloque
-        ("B7_1301_1700", 1301, 1700, 2, 2, 4, 90000),  # 30ms para el cuarto bloque
+        ("B1_0400_0410", 400, 410, 2, 1, 2, exposure_time),
+        ("B2_0411_0450", 411, 450, 2, 1, 2, exposure_time),
+        ("B3_0451_0500", 451, 500, 2, 1, 2, exposure_time),
+        ("B4_0501_0700", 501, 700, 2, 1, 2, exposure_time),
+        ("B5_0701_1000", 701, 1000, 2, 2, 3, exposure_time),  # 40ms para el segundo bloque
+        ("B6_1001_1300", 1001, 1300, 2, 2, 4, exposure_time),  # 60ms para el tercer bloque
+        ("B7_1301_1700", 1301, 1700, 2, 2, 4, exposure_time),  # 30ms para el cuarto bloque
         # ("B10_00701_1000_prueba", 701, 800, 2, 2, 3, 50000),
         # ("B11_00701_1000_prueba", 801, 900, 2, 2, 4, 50000)
     ]

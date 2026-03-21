@@ -45,7 +45,7 @@ def compute_x_peak_guided_centroid(
     local_half_width: int = 60,
     prev_x: float | None = None,
     track_max_jump: int = 120,
-) -> tuple[float, int, np.ndarray, np.ndarray]:
+) -> tuple[float, int, np.ndarray, np.ndarray, tuple[int, int]]:
     if img.ndim == 3:
         img = img.mean(axis=2)
     img = img.astype(np.float64)
@@ -80,21 +80,21 @@ def compute_x_peak_guided_centroid(
     x1 = min(w, x_peak + local_half_width + 1)
     local = prof_s[x0:x1]
     if local.size == 0:
-        return float(x_peak), x_peak, profile_x, band
+        return float(x_peak), x_peak, profile_x, img, (y0, y1)
 
     local_max = local.max()
     if local_max <= 0:
-        return float(x_peak), x_peak, profile_x, band
+        return float(x_peak), x_peak, profile_x, img, (y0, y1)
 
     thresh = threshold_ratio_local * local_max
     mask = local > thresh
     if not np.any(mask):
-        return float(x_peak), x_peak, profile_x, band
+        return float(x_peak), x_peak, profile_x, img, (y0, y1)
 
     xs = np.arange(x0, x1, dtype=np.float64)
     weights = local * mask
     x_centroid = (xs * weights).sum() / weights.sum()
-    return float(x_centroid), x_peak, profile_x, band
+    return float(x_centroid), x_peak, profile_x, img, (y0, y1)
 
 
 def collect_dispersion_data(scan_root: Path) -> list[dict]:
@@ -113,7 +113,7 @@ def collect_dispersion_data(scan_root: Path) -> list[dict]:
 
     for wavelength_nm, file_path in data_raw:
         img = np.load(file_path)
-        x_centroid, x_peak, profile_x, band = compute_x_peak_guided_centroid(
+        x_centroid, x_peak, profile_x, image_2d, band_limits = compute_x_peak_guided_centroid(
             img,
             crop_half_height=30,
             background_percentile=20.0,
@@ -126,7 +126,10 @@ def collect_dispersion_data(scan_root: Path) -> list[dict]:
         )
 
         if prev_x is not None and abs(x_centroid - prev_x) > 250:
-            x_centroid, x_peak, profile_x, band = compute_x_peak_guided_centroid(img, prev_x=None)
+            x_centroid, x_peak, profile_x, image_2d, band_limits = compute_x_peak_guided_centroid(
+                img,
+                prev_x=None,
+            )
 
         results.append(
             {
@@ -134,7 +137,8 @@ def collect_dispersion_data(scan_root: Path) -> list[dict]:
                 "x_centroid_px": float(x_centroid),
                 "x_peak_px": int(x_peak),
                 "profile_x": profile_x,
-                "band": band,
+                "image_2d": image_2d,
+                "band_limits": band_limits,
                 "file_path": file_path,
             }
         )
@@ -160,21 +164,24 @@ def render_frame(
         gridspec_kw={"width_ratios": [1.15, 1.0]},
     )
 
-    band = entry["band"]
-    vmin = float(np.percentile(band, 5))
-    vmax = float(np.percentile(band, 99.7))
+    image_2d = entry["image_2d"]
+    y0, y1 = entry["band_limits"]
+    vmin = float(np.percentile(image_2d, 5))
+    vmax = float(np.percentile(image_2d, 99.7))
     if vmax <= vmin:
         vmax = vmin + 1.0
 
-    ax_img.imshow(band, cmap="inferno", aspect="auto", vmin=vmin, vmax=vmax)
+    ax_img.imshow(image_2d, cmap="inferno", aspect="auto", vmin=vmin, vmax=vmax)
     ax_img.axvline(entry["x_peak_px"], color="cyan", linestyle="--", linewidth=1.2, label="Pico")
     ax_img.axvline(entry["x_centroid_px"], color="lime", linestyle="-", linewidth=1.5, label="Centroide")
+    ax_img.axhline(y0, color="white", linestyle=":", linewidth=1.0, label="Banda analizada")
+    ax_img.axhline(y1, color="white", linestyle=":", linewidth=1.0)
     ax_img.set_title(
         f"Imagen {frame_idx + 1}/{total_frames}\n"
         f"{entry['wavelength_nm']} nm | desplazamiento = {entry['displacement_px']:.2f} px"
     )
     ax_img.set_xlabel("Pixel X")
-    ax_img.set_ylabel("Banda central Y")
+    ax_img.set_ylabel("Pixel Y")
     ax_img.legend(loc="upper right")
 
     ax_plot.plot(wavelengths_nm, displacements_px, color="0.8", linewidth=1.0, zorder=1)
@@ -253,6 +260,25 @@ def build_gif(
     return output_gif, output_csv
 
 
+def find_scan_dirs(scan_root: Path) -> list[Path]:
+    if any(scan_root.glob("*.npy")):
+        return [scan_root]
+
+    scan_dirs = []
+    for path in sorted(scan_root.iterdir()):
+        if path.is_dir() and any(path.glob("*.npy")):
+            scan_dirs.append(path)
+    return scan_dirs
+
+
+def build_output_path(base_output: Path, scan_dir: Path, multiple_dirs: bool) -> Path:
+    if base_output.suffix.lower() == ".gif" and not multiple_dirs:
+        return base_output
+
+    stem = f"{scan_dir.name}_spectral_dispersion_progress"
+    return base_output / f"{stem}.gif"
+
+
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -263,14 +289,14 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scan-root",
         type=Path,
-        default=Path("scan_blocks_output") / "B7_1301_1700",
-        help="Carpeta del bloque con archivos .npy del barrido.",
+        default=Path("scan_blocks_output"),
+        help="Carpeta raiz con bloques o carpeta puntual con archivos .npy del barrido.",
     )
     parser.add_argument(
         "--output-gif",
         type=Path,
-        default=Path("analysis_dispersion") / "spectral_dispersion_progress.gif",
-        help="Ruta del GIF de salida.",
+        default=Path("analysis_dispersion") / "gifs",
+        help="GIF de salida o carpeta de salida si se procesan varios bloques.",
     )
     parser.add_argument(
         "--fps",
@@ -289,14 +315,25 @@ def build_argparser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_argparser().parse_args()
-    output_gif, output_csv = build_gif(
-        scan_root=args.scan_root,
-        output_gif=args.output_gif,
-        fps=args.fps,
-        max_frames=args.max_frames,
-    )
-    print("GIF generado:", output_gif)
-    print("CSV generado:", output_csv)
+    scan_dirs = find_scan_dirs(args.scan_root)
+    if not scan_dirs:
+        raise SystemExit(f"No encontre carpetas con .npy dentro de {args.scan_root}")
+
+    multiple_dirs = len(scan_dirs) > 1
+    outputs = []
+    for scan_dir in scan_dirs:
+        output_gif = build_output_path(args.output_gif, scan_dir, multiple_dirs)
+        gif_path, csv_path = build_gif(
+            scan_root=scan_dir,
+            output_gif=output_gif,
+            fps=args.fps,
+            max_frames=args.max_frames,
+        )
+        outputs.append((gif_path, csv_path))
+
+    for gif_path, csv_path in outputs:
+        print("GIF generado:", gif_path)
+        print("CSV generado:", csv_path)
 
 
 if __name__ == "__main__":
