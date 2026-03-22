@@ -9,6 +9,13 @@ import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
 
+from spectral_peak_utils import (
+    PeakResult,
+    compute_vertical_profile,
+    ensure_2d_image,
+    select_peak_with_plateau,
+)
+
 
 def parse_wavelength_from_filename(path: Path) -> int:
     match = re.search(r"_(\d+)nm", path.stem)
@@ -25,76 +32,20 @@ def list_all_npy(scan_root: Path) -> list[Path]:
     return sorted(files)
 
 
-def smooth_1d(x: np.ndarray, k: int = 9) -> np.ndarray:
-    k = int(k)
-    if k < 3:
-        return x
-    if k % 2 == 0:
-        k += 1
-    kernel = np.ones(k, dtype=np.float64) / k
-    return np.convolve(x, kernel, mode="same")
+def extract_block_name(path: Path) -> str:
+    match = re.match(r"^(B\d+)_", path.parent.name)
+    return match.group(1) if match else path.parent.name
 
 
-def compute_x_peak_guided_centroid(
+def compute_selected_x_from_vertical_sum(
     img: np.ndarray,
-    crop_half_height: int = 30,
-    background_percentile: float = 20.0,
-    clip_percentile: float = 99.7,
-    smooth_k: int = 9,
-    threshold_ratio_local: float = 0.2,
-    local_half_width: int = 60,
-    prev_x: float | None = None,
-    track_max_jump: int = 120,
-) -> tuple[float, int, np.ndarray, np.ndarray, tuple[int, int]]:
-    if img.ndim == 3:
-        img = img.mean(axis=2)
-    img = img.astype(np.float64)
-
-    h, w = img.shape[:2]
-    y0 = max(0, h // 2 - crop_half_height)
-    y1 = min(h, h // 2 + crop_half_height)
-    band = img[y0:y1, :].copy()
-
-    bg = np.percentile(band, background_percentile)
-    band = band - bg
-    band[band < 0] = 0.0
-
-    hi = np.percentile(band, clip_percentile)
-    if hi > 0:
-        band = np.clip(band, 0.0, hi)
-
-    profile_x = band.sum(axis=0)
-    prof_s = smooth_1d(profile_x, k=smooth_k)
-
-    if prev_x is not None:
-        lo = int(max(0, round(prev_x) - track_max_jump))
-        hiw = int(min(w, round(prev_x) + track_max_jump + 1))
-        if hiw - lo >= 5:
-            x_peak = int(lo + np.argmax(prof_s[lo:hiw]))
-        else:
-            x_peak = int(np.argmax(prof_s))
-    else:
-        x_peak = int(np.argmax(prof_s))
-
-    x0 = max(0, x_peak - local_half_width)
-    x1 = min(w, x_peak + local_half_width + 1)
-    local = prof_s[x0:x1]
-    if local.size == 0:
-        return float(x_peak), x_peak, profile_x, img, (y0, y1)
-
-    local_max = local.max()
-    if local_max <= 0:
-        return float(x_peak), x_peak, profile_x, img, (y0, y1)
-
-    thresh = threshold_ratio_local * local_max
-    mask = local > thresh
-    if not np.any(mask):
-        return float(x_peak), x_peak, profile_x, img, (y0, y1)
-
-    xs = np.arange(x0, x1, dtype=np.float64)
-    weights = local * mask
-    x_centroid = (xs * weights).sum() / weights.sum()
-    return float(x_centroid), x_peak, profile_x, img, (y0, y1)
+    plateau_atol: float = 0.0,
+    plateau_rtol: float = 0.002,
+) -> tuple[int, np.ndarray, np.ndarray, PeakResult]:
+    image_2d = ensure_2d_image(img)
+    profile_x = compute_vertical_profile(image_2d)
+    peak = select_peak_with_plateau(profile_x, atol=plateau_atol, rtol=plateau_rtol)
+    return peak.selected_x, profile_x, image_2d, peak
 
 
 def collect_dispersion_data(scan_root: Path) -> list[dict]:
@@ -109,44 +60,28 @@ def collect_dispersion_data(scan_root: Path) -> list[dict]:
     data_raw.sort(key=lambda item: item[0])
 
     results: list[dict] = []
-    prev_x: float | None = None
-
     for wavelength_nm, file_path in data_raw:
         img = np.load(file_path)
-        x_centroid, x_peak, profile_x, image_2d, band_limits = compute_x_peak_guided_centroid(
-            img,
-            crop_half_height=30,
-            background_percentile=20.0,
-            clip_percentile=99.7,
-            smooth_k=9,
-            threshold_ratio_local=0.20,
-            local_half_width=60,
-            prev_x=prev_x,
-            track_max_jump=140,
-        )
-
-        if prev_x is not None and abs(x_centroid - prev_x) > 250:
-            x_centroid, x_peak, profile_x, image_2d, band_limits = compute_x_peak_guided_centroid(
-                img,
-                prev_x=None,
-            )
+        selected_x, profile_x, image_2d, peak = compute_selected_x_from_vertical_sum(img)
 
         results.append(
             {
                 "wavelength_nm": wavelength_nm,
-                "x_centroid_px": float(x_centroid),
-                "x_peak_px": int(x_peak),
+                "selected_x_px": int(selected_x),
                 "profile_x": profile_x,
                 "image_2d": image_2d,
-                "band_limits": band_limits,
+                "plateau_start_x": peak.plateau_start_x,
+                "plateau_end_x": peak.plateau_end_x,
+                "plateau_width": peak.plateau_width,
+                "max_energy": peak.max_energy,
                 "file_path": file_path,
+                "block": extract_block_name(file_path),
             }
         )
-        prev_x = x_centroid
 
-    x0 = results[0]["x_centroid_px"]
+    x0 = results[0]["selected_x_px"]
     for item in results:
-        item["displacement_px"] = item["x_centroid_px"] - x0
+        item["displacement_px"] = item["selected_x_px"] - x0
     return results
 
 
@@ -165,20 +100,30 @@ def render_frame(
     )
 
     image_2d = entry["image_2d"]
-    y0, y1 = entry["band_limits"]
     vmin = float(np.percentile(image_2d, 5))
     vmax = float(np.percentile(image_2d, 99.7))
     if vmax <= vmin:
         vmax = vmin + 1.0
 
     ax_img.imshow(image_2d, cmap="inferno", aspect="auto", vmin=vmin, vmax=vmax)
-    ax_img.axvline(entry["x_peak_px"], color="cyan", linestyle="--", linewidth=1.2, label="Pico")
-    ax_img.axvline(entry["x_centroid_px"], color="lime", linestyle="-", linewidth=1.5, label="Centroide")
-    ax_img.axhline(y0, color="white", linestyle=":", linewidth=1.0, label="Banda analizada")
-    ax_img.axhline(y1, color="white", linestyle=":", linewidth=1.0)
+    ax_img.axvline(
+        entry["selected_x_px"],
+        color="lime",
+        linestyle="-",
+        linewidth=1.5,
+        label="X seleccionada",
+    )
+    ax_img.axvspan(
+        entry["plateau_start_x"],
+        entry["plateau_end_x"],
+        color="cyan",
+        alpha=0.15,
+        label="Meseta maxima",
+    )
     ax_img.set_title(
         f"Imagen {frame_idx + 1}/{total_frames}\n"
-        f"{entry['wavelength_nm']} nm | desplazamiento = {entry['displacement_px']:.2f} px"
+        f"{entry['block']} | {entry['wavelength_nm']} nm | "
+        f"desplazamiento = {entry['displacement_px']:.2f} px"
     )
     ax_img.set_xlabel("Pixel X")
     ax_img.set_ylabel("Pixel Y")
@@ -210,7 +155,10 @@ def render_frame(
     y_margin = max(1.0, 0.05 * float(np.ptp(displacements_px)) if len(displacements_px) > 1 else 1.0)
     ax_plot.set_ylim(displacements_px.min() - y_margin, displacements_px.max() + y_margin)
 
-    fig.suptitle(Path(entry["file_path"]).parent.name, fontsize=12)
+    fig.suptitle(
+        f"{Path(entry['file_path']).parent.name} | {Path(entry['file_path']).name}",
+        fontsize=12,
+    )
     fig.tight_layout()
 
     buffer = BytesIO()
@@ -222,13 +170,19 @@ def render_frame(
 
 def save_csv(results: list[dict], output_csv: Path) -> None:
     with output_csv.open("w", encoding="utf-8") as file:
-        file.write("wavelength_nm,x_centroid_px,x_peak_px,displacement_px,filepath\n")
+        file.write(
+            "wavelength_nm,selected_x_px,displacement_px,max_energy,"
+            "plateau_start_x,plateau_end_x,plateau_width,filepath\n"
+        )
         for entry in results:
             file.write(
                 f"{entry['wavelength_nm']},"
-                f"{entry['x_centroid_px']:.6f},"
-                f"{entry['x_peak_px']},"
+                f"{entry['selected_x_px']},"
                 f"{entry['displacement_px']:.6f},"
+                f"{entry['max_energy']:.6f},"
+                f"{entry['plateau_start_x']},"
+                f"{entry['plateau_end_x']},"
+                f"{entry['plateau_width']},"
                 f"{entry['file_path'].as_posix()}\n"
             )
 
@@ -289,7 +243,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scan-root",
         type=Path,
-        default=Path("scan_blocks_output"),
+        default=Path("scan_blocks_output/Try_diferentes_times"),
         help="Carpeta raiz con bloques o carpeta puntual con archivos .npy del barrido.",
     )
     parser.add_argument(
