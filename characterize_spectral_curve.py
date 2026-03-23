@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("scan_blocks_output"),
+        default=Path("scan_blocks_output/Try_diferentes_times"),
         help="Carpeta raiz que contiene carpetas por tiempo de exposicion.",
     )
     parser.add_argument(
